@@ -1,0 +1,186 @@
+import requests
+from datetime import datetime
+import base64
+import sqlite3
+
+
+#auth for limble
+semeq_api_key = 'REDACTED'
+limble_secret = 'REDACTED'
+limble_client_id = 'REDACTED'
+limble_credentials = f"{limble_client_id}:{limble_secret}"
+base64_credentials = base64.b64encode(limble_credentials.encode()).decode() 
+
+
+def unix_to_string(unix_timestamp):
+    return datetime.utcfromtimestamp(unix_timestamp).strftime('%Y-%m-%d %H:%M:%S')
+
+def get_completed_tasks(location_id):
+    limble_api_url = 'https://api.limblecmms.com:443/v2/tasks/'
+    headers = {
+        'Authorization': f'Basic {base64_credentials}'
+    }
+    params = {
+        'locations': location_id,
+        'status': 1,  # 1 indicates completed tasks
+    }
+
+    try:
+        response = requests.get(limble_api_url, headers=headers, params=params)
+        if response.status_code == 200:
+            return response.json()
+        else:
+            print(f"Request failed with status code {response.status_code}")
+            return None
+    except requests.exceptions.RequestException as e:
+        print(f"Request error: {e}")
+        return None
+    
+def parse_instructions(instructions_response):
+    questions_and_answers = []
+
+    current_question = None
+    current_answers = []
+
+    option_map = {}  # Create a mapping of itemOptionID to (itemOptionText, itemOptionOrder)
+
+    for instruction in instructions_response:
+        instruction_text = instruction['instruction']
+        response = instruction['response']
+
+        # Build the option map
+        for option in instruction.get('options', []):
+            option_id = option['itemOptionID']
+            option_text = option['itemOptionText']
+            option_order = option['itemOptionOrder']
+            option_map[option_id] = (option_text, option_order)
+
+        # Check if it's a new question
+        if instruction_text.startswith(('01.', '02.', '03.', '04.')):
+            if current_question:
+                questions_and_answers.append({'question': current_question, 'responses': current_answers})
+            current_question = instruction_text[3:].strip()
+            current_answers = []
+
+        # Check if there is a response to this question
+        if response:
+            if isinstance(response, int):
+                # Convert response ID to text using the option map and include the order
+                response_text, response_order = option_map.get(response, ('Invalid Response ID', 0))
+            else:
+                response_text = response
+                response_order = 0
+            current_answers.append({'answer': response_text, 'order': response_order})
+
+    if current_question:
+        questions_and_answers.append({'question': current_question, 'responses': current_answers})
+
+    return questions_and_answers 
+
+location_id = 46198
+completed_tasks = get_completed_tasks(location_id)
+
+
+conn = sqlite3.connect('processed_tasks.db')
+cursor = conn.cursor()
+
+# Create a table to store processed reports if it doesn't exist
+cursor.execute('''
+    CREATE TABLE IF NOT EXISTS processed_tasks (
+        task_id INTEGER PRIMARY KEY
+    )
+''')
+conn.commit()
+
+if completed_tasks:
+    for task in completed_tasks:
+
+        task_id = task.get('taskID')
+        cursor.execute("SELECT task_id FROM processed_tasks WHERE task_id=?", (task_id,))
+        existing_task = cursor.fetchone()
+
+        if not existing_task:
+
+            name = task.get("name")
+            description = task.get("description")
+            date_completed = unix_to_string(task.get("dateCompleted"))
+            task["dateCompleted"] = date_completed
+            report_number = task.get("meta1")
+            token = task.get('meta2')
+            endpoint = f'v2/tasks/{task_id}/instructions'
+            instructions_url = 'https://api.limblecmms.com:443/' + endpoint
+            instructions_headers = {
+                'Authorization': f'Basic {base64_credentials}',
+            }
+            instructions_response = requests.get(instructions_url, headers = instructions_headers)
+            if instructions_response.status_code == 200:
+                instructions = instructions_response.json()
+
+            else: 
+                print(f"Request failed with status code {instructions_response.status_code}")
+
+            all_instructions = parse_instructions(instructions)
+    
+
+            #set description, or pass a empty string if empty
+
+            try:
+                desc_a = all_instructions[0]['responses'][1]['answer']
+            except IndexError:
+                desc_a = ''
+
+
+            try:
+                desc_b = all_instructions[1]['responses'][1]['answer']
+            except IndexError:
+                desc_b = ''
+
+            try:
+                desc_c = all_instructions[2]['responses'][1]['answer']
+            except IndexError:
+                desc_c = ''
+
+            try:
+                desc_d = all_instructions[3]['responses'][1]['answer']
+            except IndexError:
+                desc_d = ''
+
+            # process here to semeq
+            semeq_url = f'https://online.semeq-api.com/post-report-feedback?token={token}'
+
+            semeq_headers = {
+                'x-api-key': semeq_api_key,
+            }
+            semeq_payload = {
+                "psm_os": "",
+                "time_spent": "",
+                "stopping_time": "",
+                "nm_resp_inter": "",
+                'answer_a': all_instructions[0]['responses'][0]['order'],
+                'desc_a': desc_a,
+                'answer_b': all_instructions[1]['responses'][0]['order'],
+                'desc_b': desc_b,
+                'answer_c': all_instructions[2]['responses'][0]['order'],
+                'desc_c': desc_c,
+                'answer_d': all_instructions[3]['responses'][0]['order'],
+                'desc_d': desc_d,
+                "answer_e": None,
+                "desc_e": "",
+                "answer_f": None,
+                "desc_f": "",
+                "resp_final": None,
+                "downtime": None,
+                "sec_damage": None,
+                "work_avoided": None,
+                "currency_id": None
+            }
+            semeq_response = requests.post(semeq_url, headers=semeq_headers, json=semeq_payload)
+            if semeq_response.status_code == 200:
+                print(f'{report_number} was successfully updated on SEMEQ')
+                cursor.execute("INSERT INTO processed_tasks (task_id) VALUES (?)", (task_id,))
+                conn.commit()
+                print(f'Task Processed: {report_number}, {name}, Completed: {date_completed}')
+            else:
+                print(f'Request to Semeq failed with status code {semeq_response.status_code}')
+
+conn.close()
