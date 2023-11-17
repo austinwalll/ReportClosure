@@ -16,7 +16,7 @@ def unix_to_string(unix_timestamp):
     return datetime.utcfromtimestamp(unix_timestamp).strftime('%Y-%m-%d %H:%M:%S')
 
 def get_completed_tasks(location_id):
-    limble_api_url = 'https://api.limblecmms.com:443/v2/tasks/'
+    limble_api_url = 'REDACTED'
     headers = {
         'Authorization': f'Basic {base64_credentials}'
     }
@@ -77,7 +77,7 @@ def parse_instructions(instructions_response):
 
     return questions_and_answers 
 
-location_id = 46198
+location_id = REDACTED
 completed_tasks = get_completed_tasks(location_id)
 
 
@@ -108,7 +108,7 @@ if completed_tasks:
             report_number = task.get("meta1")
             token = task.get('meta2')
             endpoint = f'v2/tasks/{task_id}/instructions'
-            instructions_url = 'https://api.limblecmms.com:443/' + endpoint
+            instructions_url = 'REDACTED' + endpoint
             instructions_headers = {
                 'Authorization': f'Basic {base64_credentials}',
             }
@@ -146,7 +146,7 @@ if completed_tasks:
                 desc_d = ''
 
             # process here to semeq
-            semeq_url = f'https://online.semeq-api.com/post-report-feedback?token={token}'
+            semeq_url = f'REDACTED'
 
             semeq_headers = {
                 'x-api-key': semeq_api_key,
